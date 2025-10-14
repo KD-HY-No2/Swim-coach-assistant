@@ -1,0 +1,1161 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Clock, Plus, Trash2, Users, Settings, ExternalLink, X, Upload, Download, RefreshCw, Play, Square, History } from 'lucide-react';
+
+const EVENTS = [
+  '50 Free', '100 Free', '200 Free', '500 Free', '1000 Free', '1650 Free',
+  '50 Back', '100 Back', '200 Back',
+  '50 Breast', '100 Breast', '200 Breast',
+  '50 Fly', '100 Fly', '200 Fly',
+  '100 IM', '200 IM', '400 IM'
+];
+
+const COURSE_TYPES = ['SCY', 'LCM', 'SCM'];
+
+export default function SwimCoachApp() {
+  const [numLanes, setNumLanes] = useState(3);
+  const [athletes, setAthletes] = useState([]);
+  const [lanes, setLanes] = useState({});
+  const [showRoster, setShowRoster] = useState(false);
+  const [editingAthlete, setEditingAthlete] = useState(null);
+  const [showBatchImport, setShowBatchImport] = useState({});
+  const [viewingTimes, setViewingTimes] = useState(null);
+  const [draggedAthlete, setDraggedAthlete] = useState(null);
+  const [batchImportText, setBatchImportText] = useState({});
+  const [selectedCourse, setSelectedCourse] = useState('SCY');
+  const [distributionMode, setDistributionMode] = useState('standard');
+  const [showManualImport, setShowManualImport] = useState(false);
+  const [manualImportText, setManualImportText] = useState('');
+  
+  // Set configuration
+  const [setConfig, setSetConfig] = useState({});
+  const [globalSendoff, setGlobalSendoff] = useState(5);
+  const [setRunning, setSetRunning] = useState(false);
+  const [setStartTime, setSetStartTime] = useState(null);
+  
+  // Timer states
+  const [athleteTimers, setAthleteTimers] = useState({});
+  const [athleteSplits, setAthleteSplits] = useState({});
+  const [expandedSplits, setExpandedSplits] = useState({});
+  
+  // Modals
+  const [showSaveSetModal, setShowSaveSetModal] = useState(false);
+  const [showBestTimeModal, setShowBestTimeModal] = useState(null);
+  const [viewingHistory, setViewingHistory] = useState(null);
+
+  // Timer update loop
+  useEffect(() => {
+    if (!setRunning) return;
+    
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setAthleteTimers(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(athleteId => {
+          const timer = updated[athleteId];
+          if (timer.active) {
+            const elapsed = now - timer.startTime;
+            const config = getAthleteSetConfig(athleteId);
+            const cycleMs = config.cycleTime * 1000;
+            
+            // Auto-reset on cycle
+            if (elapsed >= cycleMs && timer.currentRep < config.repeats) {
+              updated[athleteId] = {
+                ...timer,
+                startTime: now,
+                currentRep: timer.currentRep + 1
+              };
+            } else if (timer.currentRep >= config.repeats) {
+              updated[athleteId] = {
+                ...timer,
+                active: false
+              };
+            }
+          }
+        });
+        return updated;
+      });
+    }, 50);
+    
+    return () => clearInterval(interval);
+  }, [setRunning]);
+
+  const getAthleteSetConfig = (athleteId) => {
+    // Find which lane the athlete is in
+    let laneNum = null;
+    Object.keys(lanes).forEach(lane => {
+      if (lanes[lane].includes(athleteId)) {
+        laneNum = lane;
+      }
+    });
+    
+    if (!laneNum || !setConfig[laneNum]) {
+      return { repeats: 10, distance: 100, cycleTime: 120 };
+    }
+    
+    return setConfig[laneNum];
+  };
+
+  const updateSetConfig = (laneNum, field, value) => {
+    setSetConfig(prev => {
+      const updated = { ...prev };
+      
+      // If updating lane 1, copy to all other lanes
+      if (laneNum === 1) {
+        for (let i = 1; i <= numLanes; i++) {
+          if (!updated[i]) updated[i] = {};
+          updated[i][field] = value;
+        }
+      } else {
+        if (!updated[laneNum]) updated[laneNum] = {};
+        updated[laneNum][field] = value;
+      }
+      
+      return updated;
+    });
+  };
+
+  const startSet = () => {
+    const now = Date.now();
+    setSetStartTime(now);
+    setSetRunning(true);
+    
+    const timers = {};
+    const splits = {};
+    
+    Object.keys(lanes).forEach(laneNum => {
+      const laneAthletes = lanes[laneNum];
+      laneAthletes.forEach((athleteId, index) => {
+        const config = setConfig[laneNum] || { repeats: 10, distance: 100, cycleTime: 120 };
+        const sendoffDelay = index * globalSendoff * 1000;
+        
+        timers[athleteId] = {
+          startTime: now + sendoffDelay,
+          active: true,
+          currentRep: 1,
+          sendoffDelay
+        };
+        
+        splits[athleteId] = [];
+      });
+    });
+    
+    setAthleteTimers(timers);
+    setAthleteSplits(splits);
+  };
+
+  const stopSet = () => {
+    setSetRunning(false);
+    setShowSaveSetModal(true);
+  };
+
+  const recordSplit = (athleteId) => {
+    if (!setRunning || !athleteTimers[athleteId]) return;
+    
+    const now = Date.now();
+    const timer = athleteTimers[athleteId];
+    const elapsed = now - timer.startTime;
+    const splitTime = elapsed / 1000;
+    
+    setAthleteSplits(prev => ({
+      ...prev,
+      [athleteId]: [...(prev[athleteId] || []), {
+        rep: timer.currentRep,
+        time: splitTime,
+        timestamp: now
+      }]
+    }));
+  };
+
+  const saveSetData = () => {
+    const setData = {
+      date: new Date().toISOString(),
+      config: setConfig,
+      sendoff: globalSendoff,
+      splits: athleteSplits
+    };
+    
+    // Check for new best times
+    const newBestTimes = [];
+    Object.keys(athleteSplits).forEach(athleteId => {
+      const athlete = athletes.find(a => a.id === athleteId);
+      if (!athlete) return;
+      
+      const config = getAthleteSetConfig(athleteId);
+      const splits = athleteSplits[athleteId];
+      
+      if (config.distance === 100 && splits.length > 0) {
+        const fastestSplit = Math.min(...splits.map(s => s.time));
+        const currentBest = getSortTime(athlete);
+        
+        if (fastestSplit < currentBest) {
+          newBestTimes.push({
+            athleteId,
+            athleteName: athlete.name,
+            oldTime: currentBest,
+            newTime: fastestSplit
+          });
+        }
+      }
+    });
+    
+    // Save training data to athletes
+    setAthletes(prev => prev.map(athlete => {
+      if (athleteSplits[athlete.id]) {
+        return {
+          ...athlete,
+          trainingHistory: [...(athlete.trainingHistory || []), {
+            ...setData,
+            athleteSplits: athleteSplits[athlete.id]
+          }]
+        };
+      }
+      return athlete;
+    }));
+    
+    setShowSaveSetModal(false);
+    
+    // Show best time approval if any
+    if (newBestTimes.length > 0) {
+      setShowBestTimeModal(newBestTimes);
+    } else {
+      resetSet();
+    }
+  };
+
+  const discardSetData = () => {
+    setShowSaveSetModal(false);
+    resetSet();
+  };
+
+  const approveBestTime = (athleteId, newTime) => {
+    setAthletes(prev => prev.map(athlete => {
+      if (athlete.id === athleteId) {
+        const newTimes = { ...athlete.times };
+        if (!newTimes['100 Free']) newTimes['100 Free'] = {};
+        newTimes['100 Free']['SCY'] = formatSeconds(newTime);
+        return { ...athlete, times: newTimes };
+      }
+      return athlete;
+    }));
+  };
+
+  const resetSet = () => {
+    setSetRunning(false);
+    setSetStartTime(null);
+    setAthleteTimers({});
+    setAthleteSplits({});
+    setShowBestTimeModal(null);
+  };
+
+  const formatSeconds = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = (seconds % 60).toFixed(2);
+    if (mins > 0) {
+      return `${mins}:${secs.padStart(5, '0')}`;
+    }
+    return secs;
+  };
+
+  const addAthlete = () => {
+    const newAthlete = {
+      id: Date.now().toString(),
+      name: 'New Athlete',
+      swimCloudUrl: '',
+      times: {},
+      notes: '',
+      trainingHistory: []
+    };
+    setAthletes([newAthlete, ...athletes]);
+    setEditingAthlete(newAthlete.id);
+  };
+
+  const updateAthlete = (id, field, value) => {
+    setAthletes(athletes.map(a => a.id === id ? { ...a, [field]: value } : a));
+  };
+
+  const deleteAthlete = (id) => {
+    setAthletes(athletes.filter(a => a.id !== id));
+    const newLanes = { ...lanes };
+    Object.keys(newLanes).forEach(lane => {
+      newLanes[lane] = newLanes[lane].filter(aId => aId !== id);
+    });
+    setLanes(newLanes);
+  };
+
+  const parseBatchTimes = (text, athleteId) => {
+    const lines = text.split('\n');
+    const athlete = athletes.find(a => a.id === athleteId);
+    if (!athlete) return;
+
+    const newTimes = { ...athlete.times };
+
+    lines.forEach(line => {
+      line = line.trim();
+      if (!line) return;
+
+      const courseMatch = line.match(/\b(SCY|LCM|SCM)\b/i);
+      const course = courseMatch ? courseMatch[1].toUpperCase() : 'SCY';
+
+      let eventName = null;
+      for (const event of EVENTS) {
+        const eventPattern = event.replace(/\s+/g, '\\s*');
+        const regex = new RegExp(eventPattern, 'i');
+        if (regex.test(line)) {
+          eventName = event;
+          break;
+        }
+      }
+
+      if (!eventName) return;
+
+      const timeMatch = line.match(/(\d+:)?\d+\.\d+/);
+      if (timeMatch) {
+        const time = timeMatch[0];
+        if (!newTimes[eventName]) newTimes[eventName] = {};
+        newTimes[eventName][course] = time;
+      }
+    });
+
+    updateAthlete(athleteId, 'times', newTimes);
+    setBatchImportText(prev => ({ ...prev, [athleteId]: '' }));
+    setShowBatchImport(prev => ({ ...prev, [athleteId]: false }));
+  };
+
+  const getDisplayTime = (athlete) => {
+    if (athlete.times && athlete.times['100 Free']) {
+      const time100 = athlete.times['100 Free']['SCY'] || athlete.times['100 Free']['LCM'] || athlete.times['100 Free']['SCM'];
+      if (time100) return { time: time100, event: '100 Free' };
+    }
+    if (athlete.times && athlete.times['50 Free']) {
+      const time50 = athlete.times['50 Free']['SCY'] || athlete.times['50 Free']['LCM'] || athlete.times['50 Free']['SCM'];
+      if (time50) return { time: time50, event: '50 Free' };
+    }
+    return { time: '', event: '' };
+  };
+
+  const timeToSeconds = (timeStr) => {
+    if (!timeStr) return 999999;
+    const parts = timeStr.split(':');
+    if (parts.length === 2) {
+      return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+    }
+    return parseFloat(timeStr);
+  };
+
+  const getSortTime = (athlete) => {
+    if (athlete.times && athlete.times['100 Free']) {
+      const time100 = athlete.times['100 Free']['SCY'] || athlete.times['100 Free']['LCM'] || athlete.times['100 Free']['SCM'];
+      if (time100) return timeToSeconds(time100);
+    }
+    if (athlete.times && athlete.times['50 Free']) {
+      const time50 = athlete.times['50 Free']['SCY'] || athlete.times['50 Free']['LCM'] || athlete.times['50 Free']['SCM'];
+      if (time50) return timeToSeconds(time50) * 2 + 10;
+    }
+    return 999999;
+  };
+
+  const distributeAthletes = (selectedIds, mode) => {
+    const selectedAthletes = athletes.filter(a => selectedIds.includes(a.id));
+    const sorted = [...selectedAthletes].sort((a, b) => getSortTime(a) - getSortTime(b));
+
+    const newLanes = {};
+    for (let i = 1; i <= numLanes; i++) {
+      newLanes[i] = [];
+    }
+
+    if (mode === 'standard') {
+      const swimmersPerLane = Math.ceil(sorted.length / numLanes);
+      sorted.forEach((athlete, index) => {
+        const laneNum = Math.floor(index / swimmersPerLane) + 1;
+        if (laneNum <= numLanes) {
+          newLanes[laneNum].push(athlete.id);
+        }
+      });
+    } else {
+      sorted.forEach((athlete, index) => {
+        const laneNum = (index % numLanes) + 1;
+        newLanes[laneNum].push(athlete.id);
+      });
+    }
+
+    setLanes(newLanes);
+  };
+
+  const exportData = () => {
+    const data = {
+      athletes,
+      numLanes,
+      exportDate: new Date().toISOString()
+    };
+    const jsonStr = JSON.stringify(data, null, 2);
+    
+    navigator.clipboard.writeText(jsonStr).then(() => {
+      alert('Data copied to clipboard! Save it to a text file for later import.');
+    }).catch(() => {
+      prompt('Copy this data and save it:', jsonStr);
+    });
+  };
+
+  const processImportData = (jsonText) => {
+    try {
+      const data = JSON.parse(jsonText);
+      if (data.athletes) {
+        setAthletes(data.athletes);
+      }
+      if (data.numLanes) {
+        setNumLanes(data.numLanes);
+      }
+      setLanes({});
+      setShowManualImport(false);
+      setManualImportText('');
+      alert('Data imported successfully!');
+    } catch (err) {
+      alert('Error importing data. Please check the format.');
+    }
+  };
+
+  const importFromClipboard = async () => {
+    setShowManualImport(true);
+  };
+
+  const importData = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        processImportData(event.target.result);
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    }
+  };
+
+  const handleDragStart = (e, athleteId) => {
+    if (setRunning) return;
+    setDraggedAthlete(athleteId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e, laneNum) => {
+    e.preventDefault();
+    if (!draggedAthlete || setRunning) return;
+
+    const newLanes = { ...lanes };
+    Object.keys(newLanes).forEach(lane => {
+      newLanes[lane] = newLanes[lane].filter(id => id !== draggedAthlete);
+    });
+
+    if (!newLanes[laneNum]) newLanes[laneNum] = [];
+    newLanes[laneNum].push(draggedAthlete);
+
+    setLanes(newLanes);
+    setDraggedAthlete(null);
+  };
+
+  const AthleteCard = ({ athlete, laneNum }) => {
+    const timer = athleteTimers[athlete.id];
+    const splits = athleteSplits[athlete.id] || [];
+    const displayInfo = getDisplayTime(athlete);
+    const isExpanded = expandedSplits[athlete.id];
+    
+    const getCurrentTime = () => {
+      if (!timer || !timer.active) return 0;
+      const now = Date.now();
+      if (now < timer.startTime) return 0;
+      return (now - timer.startTime) / 1000;
+    };
+    
+    const currentTime = setRunning && timer ? getCurrentTime() : 0;
+    const lastSplit = splits.length > 0 ? splits[splits.length - 1] : null;
+    
+    return (
+      <div
+        draggable={!setRunning}
+        onDragStart={(e) => handleDragStart(e, athlete.id)}
+        onClick={() => setRunning && timer?.active && recordSplit(athlete.id)}
+        className={`bg-white rounded-lg shadow-md p-3 select-none transition-all ${
+          setRunning && timer?.active ? 'cursor-pointer hover:shadow-lg active:scale-95 ring-2 ring-blue-400' : ''
+        }`}
+        style={{ minWidth: '160px' }}
+      >
+        <div className="font-semibold text-sm mb-1 truncate">{athlete.name}</div>
+        {!setRunning && displayInfo.time && (
+          <div className="text-xs text-gray-600 mb-1">{displayInfo.event}: {displayInfo.time}</div>
+        )}
+        
+        {setRunning && timer && (
+          <div className="mt-2">
+            <div className="text-xs text-gray-500">Rep {timer.currentRep}/{getAthleteSetConfig(athlete.id).repeats}</div>
+            <div className={`text-xl font-mono font-bold ${timer.active ? 'text-blue-600' : 'text-gray-400'}`}>
+              {formatSeconds(currentTime)}
+            </div>
+            {lastSplit && (
+              <div className="text-xs text-gray-600 mt-1">
+                Last: {formatSeconds(lastSplit.time)}
+              </div>
+            )}
+            {splits.length > 1 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpandedSplits(prev => ({ ...prev, [athlete.id]: !prev[athlete.id] }));
+                }}
+                className="text-xs text-blue-600 hover:underline mt-1"
+              >
+                {isExpanded ? 'Hide' : 'Show'} All Splits
+              </button>
+            )}
+            {isExpanded && (
+              <div className="mt-2 max-h-32 overflow-y-auto text-xs space-y-1">
+                {splits.map((split, idx) => (
+                  <div key={idx} className="flex justify-between">
+                    <span>Rep {split.rep}:</span>
+                    <span className="font-mono">{formatSeconds(split.time)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        
+        {!setRunning && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setViewingTimes(athlete.id);
+            }}
+            className="text-xs text-blue-600 hover:text-blue-800 mt-1 hover:underline"
+          >
+            View All Times →
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const TimesModal = ({ athlete }) => {
+    if (!athlete) return null;
+
+    const eventsWithTimes = EVENTS.filter(event => athlete.times?.[event]?.[selectedCourse]);
+
+    const handleClose = () => {
+      setViewingTimes(null);
+    };
+
+    return (
+      <div 
+        className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] p-4"
+        onMouseDown={handleClose}
+      >
+        <div 
+          className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="p-6 border-b flex justify-between items-center flex-shrink-0">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-800">{athlete.name} - Best Times</h2>
+              {athlete.swimCloudUrl && (
+                <a
+                  href={athlete.swimCloudUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 mt-1"
+                >
+                  View on SwimCloud <ExternalLink size={14} />
+                </a>
+              )}
+            </div>
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleClose();
+              }}
+              className="p-2 hover:bg-gray-100 rounded-full z-[10000]"
+              type="button"
+            >
+              <X size={24} />
+            </button>
+          </div>
+
+          <div className="p-6 flex gap-2 border-b flex-shrink-0">
+            {COURSE_TYPES.map(course => (
+              <button
+                key={course}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  setSelectedCourse(course);
+                }}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  selectedCourse === course
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                }`}
+                type="button"
+              >
+                {course}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6">
+            {eventsWithTimes.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {eventsWithTimes.map(event => {
+                  const time = athlete.times[event][selectedCourse];
+                  return (
+                    <div key={event} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                      <div className="font-semibold text-gray-800 text-sm mb-1">{event}</div>
+                      <div className="text-lg font-mono text-blue-600">
+                        {time}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                No times recorded for {selectedCourse} yet.
+              </div>
+            )}
+          </div>
+          
+          <div className="p-4 border-t flex-shrink-0 bg-gray-50">
+            <button
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleClose();
+              }}
+              className="w-full px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-medium"
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 p-4">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+              <Clock className="text-blue-600" />
+              Swim Coach
+            </h1>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-gray-700">Lanes:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={numLanes}
+                  onChange={(e) => !setRunning && setNumLanes(Math.max(1, parseInt(e.target.value) || 1))}
+                  disabled={setRunning}
+                  className="w-16 px-2 py-1 border rounded"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-gray-700">Sendoff:</label>
+                <select
+                  value={globalSendoff}
+                  onChange={(e) => setGlobalSendoff(parseInt(e.target.value))}
+                  disabled={setRunning}
+                  className="px-2 py-1 border rounded"
+                >
+                  <option value={5}>5s</option>
+                  <option value={10}>10s</option>
+                  <option value={15}>15s</option>
+                  <option value={20}>20s</option>
+                </select>
+              </div>
+              {!setRunning ? (
+                <button
+                  onClick={startSet}
+                  disabled={Object.keys(lanes).length === 0}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium disabled:bg-gray-400 flex items-center gap-2"
+                >
+                  <Play size={18} />
+                  Start Set
+                </button>
+              ) : (
+                <button
+                  onClick={stopSet}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium flex items-center gap-2"
+                >
+                  <Square size={18} />
+                  Stop Set
+                </button>
+              )}
+              <button
+                onClick={() => setShowRoster(!showRoster)}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  showRoster
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                }`}
+              >
+                <Users className="inline mr-2" size={18} />
+                {showRoster ? 'Hide' : 'Show'} Roster
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {Array.from({ length: numLanes }, (_, i) => i + 1).map(laneNum => {
+              const config = setConfig[laneNum] || { repeats: 10, distance: 100, cycleTime: 120 };
+              
+              return (
+                <div key={laneNum} className="bg-gradient-to-r from-blue-100 to-cyan-100 rounded-lg p-4 border-2 border-blue-200">
+                  <div className="flex items-center gap-3">
+                    <div className="font-bold text-blue-800 text-lg w-20">Lane {laneNum}</div>
+                    <div 
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, laneNum)}
+                      className="flex gap-2 flex-wrap flex-1 min-h-24"
+                    >
+                      {lanes[laneNum]?.map(athleteId => {
+                        const athlete = athletes.find(a => a.id === athleteId);
+                        return athlete ? <AthleteCard key={athleteId} athlete={athlete} laneNum={laneNum} /> : null;
+                      })}
+                      {(!lanes[laneNum] || lanes[laneNum].length === 0) && (
+                        <div className="text-gray-400 text-sm italic">Drop athletes here</div>
+                      )}
+                    </div>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="number"
+                        value={config.repeats}
+                        onChange={(e) => updateSetConfig(laneNum, 'repeats', parseInt(e.target.value) || 0)}
+                        disabled={setRunning}
+                        className="w-16 px-2 py-1 border rounded text-sm"
+                        placeholder="10"
+                      />
+                      <span className="text-sm">×</span>
+                      <input
+                        type="number"
+                        value={config.distance}
+                        onChange={(e) => updateSetConfig(laneNum, 'distance', parseInt(e.target.value) || 0)}
+                        disabled={setRunning}
+                        className="w-20 px-2 py-1 border rounded text-sm"
+                        placeholder="100"
+                      />
+                      <span className="text-sm">@</span>
+                      <input
+                        type="number"
+                        value={config.cycleTime}
+                        onChange={(e) => updateSetConfig(laneNum, 'cycleTime', parseInt(e.target.value) || 0)}
+                        disabled={setRunning}
+                        className="w-20 px-2 py-1 border rounded text-sm"
+                        placeholder="120"
+                      />
+                      <span className="text-xs text-gray-600">sec</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {showRoster && (
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-gray-800">Team Roster</h2>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={exportData}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium flex items-center gap-2"
+                >
+                  <Download size={18} />
+                  Copy Data
+                </button>
+                <button
+                  onClick={importFromClipboard}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium flex items-center gap-2"
+                >
+                  <Upload size={18} />
+                  Paste Data
+                </button>
+                <label className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium flex items-center gap-2 cursor-pointer">
+                  <Upload size={18} />
+                  Import File
+                  <input
+                    type="file"
+                    accept=".json,.txt"
+                    onChange={importData}
+                    className="hidden"
+                  />
+                </label>
+                <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+                  <button
+                    onClick={() => setDistributionMode('standard')}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      distributionMode === 'standard'
+                        ? 'bg-white shadow'
+                        : 'text-gray-600 hover:text-gray-800'
+                    }`}
+                  >
+                    Standard
+                  </button>
+                  <button
+                    onClick={() => setDistributionMode('roundrobin')}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      distributionMode === 'roundrobin'
+                        ? 'bg-white shadow'
+                        : 'text-gray-600 hover:text-gray-800'
+                    }`}
+                  >
+                    Round-Robin
+                  </button>
+                </div>
+                <button
+                  onClick={() => {
+                    const allIds = athletes.map(a => a.id);
+                    distributeAthletes(allIds, distributionMode);
+                  }}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2"
+                >
+                  <RefreshCw size={18} />
+                  Auto-Distribute
+                </button>
+                <button
+                  onClick={addAthlete}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  <Plus className="inline mr-1" size={18} />
+                  Add Athlete
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {athletes.map(athlete => (
+                <div key={athlete.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                  {editingAthlete === athlete.id ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={athlete.name}
+                        onChange={(e) => updateAthlete(athlete.id, 'name', e.target.value)}
+                        className="w-full px-2 py-1 border rounded font-semibold"
+                        placeholder="Athlete Name"
+                      />
+                      <input
+                        type="text"
+                        value={athlete.swimCloudUrl}
+                        onChange={(e) => updateAthlete(athlete.id, 'swimCloudUrl', e.target.value)}
+                        className="w-full px-2 py-1 border rounded text-sm"
+                        placeholder="SwimCloud URL (optional)"
+                      />
+                      
+                      {!showBatchImport[athlete.id] ? (
+                        <button
+                          onClick={() => setShowBatchImport(prev => ({ ...prev, [athlete.id]: true }))}
+                          className="w-full px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm flex items-center justify-center gap-2"
+                        >
+                          <Upload size={16} />
+                          Batch Import Times
+                        </button>
+                      ) : (
+                        <div className="border-2 border-green-500 rounded-lg p-3 bg-green-50">
+                          <div className="flex justify-between items-center mb-2">
+                            <h3 className="font-semibold text-sm">Import Times</h3>
+                            <button
+                              onClick={() => setShowBatchImport(prev => ({ ...prev, [athlete.id]: false }))}
+                              className="text-gray-500 hover:text-gray-700"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-600 mb-2">
+                            Format: 50 Free: 23.45 or 100 Free 51.20 SCY
+                          </p>
+                          <textarea
+                            value={batchImportText[athlete.id] || ''}
+                            onChange={(e) => setBatchImportText(prev => ({ ...prev, [athlete.id]: e.target.value }))}
+                            className="w-full h-32 px-2 py-1 border rounded text-sm font-mono"
+                            placeholder="Paste times here..."
+                          />
+                          <button
+                            onClick={() => parseBatchTimes(batchImportText[athlete.id] || '', athlete.id)}
+                            className="w-full px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 mt-2"
+                          >
+                            Import
+                          </button>
+                        </div>
+                      )}
+                      
+                      <textarea
+                        value={athlete.notes}
+                        onChange={(e) => updateAthlete(athlete.id, 'notes', e.target.value)}
+                        className="w-full px-2 py-1 border rounded text-sm"
+                        placeholder="Notes..."
+                        rows="2"
+                      />
+                      <button
+                        onClick={() => setEditingAthlete(null)}
+                        className="w-full px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex-1" onClick={(e) => e.stopPropagation()}>
+                          <div className="bg-white rounded-lg shadow-md p-3 transition-all" style={{ minWidth: '140px' }}>
+                            <div className="font-semibold text-sm mb-1 truncate">{athlete.name}</div>
+                            {getDisplayTime(athlete).time && (
+                              <div className="text-xs text-gray-600 mb-1">
+                                {getDisplayTime(athlete).event}: {getDisplayTime(athlete).time}
+                              </div>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setViewingTimes(athlete.id);
+                              }}
+                              className="text-xs text-blue-600 hover:text-blue-800 mt-1 hover:underline cursor-pointer"
+                              type="button"
+                            >
+                              View All Times →
+                            </button>
+                            {athlete.trainingHistory && athlete.trainingHistory.length > 0 && (
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setViewingHistory(athlete.id);
+                                }}
+                                className="text-xs text-green-600 hover:text-green-800 mt-1 hover:underline cursor-pointer flex items-center gap-1"
+                                type="button"
+                              >
+                                <History size={12} />
+                                Training History
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex gap-1 ml-2">
+                          <button
+                            onClick={() => setEditingAthlete(athlete.id)}
+                            className="p-1 text-blue-600 hover:bg-blue-100 rounded"
+                          >
+                            <Settings size={16} />
+                          </button>
+                          <button
+                            onClick={() => deleteAthlete(athlete.id)}
+                            className="p-1 text-red-600 hover:bg-red-100 rounded"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {athletes.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No athletes yet. Click "Add Athlete" to get started!
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {viewingTimes && <TimesModal athlete={athletes.find(a => a.id === viewingTimes)} />}
+      
+      {showManualImport && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full">
+            <div className="p-6 border-b flex justify-between items-center">
+              <h2 className="text-2xl font-bold text-gray-800">Paste Data</h2>
+              <button
+                onClick={() => {
+                  setShowManualImport(false);
+                  setManualImportText('');
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-gray-600 mb-4">
+                Paste your exported JSON data below:
+              </p>
+              <textarea
+                value={manualImportText}
+                onChange={(e) => setManualImportText(e.target.value)}
+                className="w-full h-64 px-3 py-2 border rounded-lg font-mono text-sm"
+                placeholder='{"athletes": [...], "numLanes": 3}'
+              />
+              <div className="flex gap-2 mt-4">
+                <button
+                  onClick={() => processImportData(manualImportText)}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  Import
+                </button>
+                <button
+                  onClick={() => {
+                    setShowManualImport(false);
+                    setManualImportText('');
+                  }}
+                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSaveSetModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="p-6">
+              <h2 className="text-2xl font-bold text-gray-800 mb-4">Save Training Data?</h2>
+              <p className="text-gray-600 mb-6">
+                Would you like to save the splits from this training set?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={saveSetData}
+                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={discardSetData}
+                  className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBestTimeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="p-6">
+              <h2 className="text-2xl font-bold text-gray-800 mb-4">New Best Times!</h2>
+              <div className="space-y-4 mb-6">
+                {showBestTimeModal.map((bt, idx) => (
+                  <div key={idx} className="bg-green-50 p-4 rounded-lg border border-green-200">
+                    <div className="font-semibold text-gray-800">{bt.athleteName}</div>
+                    <div className="text-sm text-gray-600">
+                      100 Free: <span className="line-through">{formatSeconds(bt.oldTime)}</span> → <span className="text-green-600 font-bold">{formatSeconds(bt.newTime)}</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        approveBestTime(bt.athleteId, bt.newTime);
+                        setShowBestTimeModal(prev => prev.filter((_, i) => i !== idx));
+                        if (showBestTimeModal.length === 1) {
+                          resetSet();
+                        }
+                      }}
+                      className="mt-2 px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                    >
+                      Approve
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={resetSet}
+                className="w-full px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-medium"
+              >
+                Skip All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewingHistory && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] p-4"
+          onMouseDown={() => setViewingHistory(null)}
+        >
+          <div 
+            className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 border-b flex justify-between items-center flex-shrink-0">
+              <h2 className="text-2xl font-bold text-gray-800">
+                {athletes.find(a => a.id === viewingHistory)?.name} - Training History
+              </h2>
+              <button
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  setViewingHistory(null);
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full"
+                type="button"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {athletes.find(a => a.id === viewingHistory)?.trainingHistory?.map((session, idx) => (
+                <div key={idx} className="mb-6 bg-gray-50 rounded-lg p-4 border border-gray-200">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <div className="font-semibold text-gray-800">
+                        {session.config[1]?.repeats || 10} × {session.config[1]?.distance || 100} @ {formatSeconds(session.config[1]?.cycleTime || 120)}
+                      </div>
+                      <div className="text-sm text-gray-600">
+                        {new Date(session.date).toLocaleDateString()} at {new Date(session.date).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      Sendoff: {session.sendoff}s
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+                    {session.athleteSplits.map((split, splitIdx) => (
+                      <div key={splitIdx} className="text-center">
+                        <div className="text-xs text-gray-500">Rep {split.rep}</div>
+                        <div className="text-sm font-mono font-semibold">{formatSeconds(split.time)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t flex-shrink-0 bg-gray-50">
+              <button
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  setViewingHistory(null);
+                }}
+                className="w-full px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-medium"
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
