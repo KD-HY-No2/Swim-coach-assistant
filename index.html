@@ -12,8 +12,21 @@
 <body>
     <div id="root"></div>
     <script type="text/babel">
-        import React, { useState, useEffect } from 'react';
-import { Clock, Plus, Trash2, Users, Settings, X, Upload, Download, RefreshCw, Play, Square, ExternalLink } from 'lucide-react';
+        const { useState, useEffect } = React;
+
+// Simple icon components
+const Clock = () => <span>🕐</span>;
+const Plus = () => <span>➕</span>;
+const Trash2 = () => <span>🗑️</span>;
+const Users = () => <span>👥</span>;
+const Settings = () => <span>⚙️</span>;
+const X = () => <span>✕</span>;
+const Upload = () => <span>📤</span>;
+const Download = () => <span>📥</span>;
+const RefreshCw = () => <span>🔄</span>;
+const Play = () => <span>▶️</span>;
+const Square = () => <span>⏹️</span>;
+const ExternalLink = () => <span>🔗</span>;
 
 const GROUP_COLORS = [
   { bg: 'bg-blue-100', active: 'bg-blue-500' },
